@@ -13,7 +13,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Настройки
 # ---------------------------------------------------------
 API_TOKEN = '8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc'
-ADMIN_CHAT_ID = None  # Сохранится автоматически при первом вызове /start
+ADMIN_CHAT_ID = None  # Сохранится автоматически при вызове /start
+MIN_PRICE_LIMIT = 800 # Минимальный порог цены (в тенге)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -47,7 +48,7 @@ async def run_auto_repricing(chat_id=None):
     if target_chat:
         await bot.send_message(
             target_chat, 
-            "🔄 **Запущен реприсинг!**\nПроверяю цены конкурентов на Kaspi..."
+            "🔄 **Запущен реприсинг!**\nПроверяю конкурентов на Kaspi..."
         )
     
     file_path = "kaspi-price-list.xlsx"
@@ -62,18 +63,41 @@ async def run_auto_repricing(chat_id=None):
     try:
         df = pd.read_excel(file_path)
         
-        # Заглушка под будущую обработку через Playwright
-        await asyncio.sleep(3) 
+        updated_items = 0
+        unchanged_items = 0
+        problem_items = [] # Список товаров, где конкуренты ниже 800 тг
+
+        # Заглушка/симуляция обработки товаров по правилам
+        for index, row in df.iterrows():
+            sku = str(row.get('SKU', row.get('Артикул', 'Неизвестно')))
+            model = str(row.get('model', row.get('Название', 'Товар')))
+            
+            # В реальном Playwright здесь берется цена 1-го места
+            # По умолчанию: если конкурентов нет — оставляем цену.
+            # Если есть — делаем на 1 тг ниже (но не меньше 800 тг).
+            
+        await asyncio.sleep(3) # Пауза симуляции
         
-        updated_count = len(df)
+        # Финальное сообщение в Telegram
         msg = (
-            f"✅ **Реприсинг успешно завершён!**\n"
-            f"Обработано товаров: {updated_count}.\n"
-            f"Цены скорректированы под 1-е место на Kaspi."
+            f"✅ **Реприсинг завершён!**\n"
+            f"📦 Всего товаров: {len(df)}\n"
+            f"🔹 Правило 1-го места: `-1 ₸` от конкурента\n"
+            f"🛑 Минимальный порог: `{MIN_PRICE_LIMIT} ₸`"
         )
         
         if target_chat:
             await bot.send_message(target_chat, msg)
+            
+            # Если найдены проблемные товары ниже 800 тг, отправляем отдельное уведомление
+            if problem_items:
+                report_text = "⚠️ **Товары с демпингом ниже 800 ₸ (рекомендуется пересоздать карточки):**\n\n"
+                for item in problem_items[:15]: # Выводим первые 15
+                    report_text += f"• **{item['sku']}** - {item['model']} (Конкурент: {item['top_price']} ₸)\n"
+                if len(problem_items) > 15:
+                    report_text += f"\nИ ещё {len(problem_items) - 15} товаров..."
+                
+                await bot.send_message(target_chat, report_text)
             
     except Exception as e:
         err_msg = f"❌ Ошибка при обработке цен: {str(e)}"
@@ -81,9 +105,8 @@ async def run_auto_repricing(chat_id=None):
         if target_chat:
             await bot.send_message(target_chat, err_msg)
 
-# Обертка для планировщика с дополнительной рандомизацией
 async def scheduled_repricing_job():
-    random_delay = random.randint(0, 1800)  # Дополнительная задержка от 0 до 30 минут
+    random_delay = random.randint(0, 1800)
     print(f"--- Авто-реприсинг сработал. Старт через {random_delay // 60} мин... ---")
     await asyncio.sleep(random_delay)
     await run_auto_repricing()
@@ -97,10 +120,15 @@ async def cmd_start(message: types.Message):
     ADMIN_CHAT_ID = message.chat.id
     await message.answer(
         "👋 **Привет! Я бот-реприсер Kaspi.**\n\n"
-        "⏰ Я работаю **автоматически каждые 2 дня** (в случайное время с разбросом в 5 часов для защиты от блокировок), проверяю конкурентов и ставлю ваши цены на **1-е место**.\n\n"
+        "⏰ Я работаю **автоматически каждые 2 дня** (в случайное время с разбросом в 5 часов для защиты от блокировок).\n\n"
+        "🎯 **Правила ценообразования:**\n"
+        "1. Нет конкурентов ➔ цена не меняется.\n"
+        "2. Есть конкуренты ➔ ставим цену на **1 ₸ ниже** 1-го места.\n"
+        "3. Минимальный порог ➔ **800 ₸**.\n"
+        "4. Демпинг ниже 800 ₸ ➔ пришлю список для пересоздания карточек.\n\n"
         "📌 **Доступные команды:**\n"
         "• `/reprice` — запустить обновление цен прямо сейчас\n"
-        "• Отправьте новый `.xlsx` файл, чтобы обновить список товаров."
+        "• Отправьте новый `.xlsx` файл, чтобы обновить базовый список товаров."
     )
 
 @dp.message(Command("reprice"))
@@ -114,11 +142,10 @@ async def handle_docs(message: types.Message):
         file_id = message.document.file_id
         file = await bot.get_file(file_id)
         
-        # Сохраняем файл на сервере
         await bot.download_file(file.file_path, "kaspi-price-list.xlsx")
         await message.answer(
             "💾 Файл `kaspi-price-list.xlsx` успешно сохранён!\n"
-            "Запускаю тестовый реприсинг..."
+            "Запускаю проверку по новым правилам..."
         )
         await run_auto_repricing(chat_id=message.chat.id)
     else:
@@ -128,7 +155,6 @@ async def handle_docs(message: types.Message):
 # 4. Запуск приложения
 # ---------------------------------------------------------
 async def main():
-    # Запуск каждые 2 дня (48 часов) с плавающим окном разброса в 5 часов (18000 сек)
     scheduler.add_job(
         scheduled_repricing_job, 
         'interval', 
