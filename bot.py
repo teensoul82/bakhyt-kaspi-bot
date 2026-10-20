@@ -1,10 +1,28 @@
 import os
 import time
 import random
+import threading
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 import telegram
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# --- МИНИ-СЕРВЕР ДЛЯ RENDER (чтобы не падало по тайм-ауту порта) ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
+    server.serve_forever()
+
+# Запускаем веб-сервер в фоновом потоке
+threading.Thread(target=run_web_server, daemon=True).start()
+
 
 # --- НАСТРОЙКИ (ЗАМЕНИТЕ СВОИ ТОКЕНЫ ЗДЕСЬ) ---
 KASPI_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="
