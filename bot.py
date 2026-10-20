@@ -36,23 +36,37 @@ def get_competitor_price(url):
             return None
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        merchants = soup.find_all('div', class_='merchants-table__item')
         prices = []
         
-        for m in merchants:
-            price_elem = m.find('div', class_='merchants-table__price')
-            if price_elem:
-                price_text = price_elem.get_text(strip=True)
-                clean_price = "".join(filter(str.isdigit, price_text))
-                if clean_price:
-                    prices.append(float(clean_price))
-                    
+        # Способ 1: Ищем по возможным классам цен
+        for cls in ['price', 'merchants-table__price', 'item-card__price-value', '_price']:
+            elems = soup.find_all(class_=lambda x: x and cls in str(x).lower())
+            for el in elems:
+                clean = "".join(filter(str.isdigit, el.get_text()))
+                if clean:
+                    val = float(clean)
+                    if 50 <= val <= 10000000: # Разумные рамки цены в тенге
+                        prices.append(val)
+                        
+        # Способ 2: Универсальный поиск цен по тексту со знаком ₸
+        if not prices:
+            import re
+            text = soup.get_text()
+            matches = re.findall(r'(\d[\d\s]*)\s*[₸тг]', text)
+            for m in matches:
+                clean = "".join(filter(str.isdigit, m))
+                if clean:
+                    val = float(clean)
+                    if 50 <= val <= 10000000:
+                        prices.append(val)
+                        
         if prices:
-            return min(prices)
+            return min(prices) # Возвращает самую низкую цену конкурента на странице
         return None
     except Exception as e:
         print(f"[Ошибка парсинга {url}]: {e}")
         return None
+
 
 # Отправка обновленных цен в Kaspi API
 def send_to_kaspi_api(result_df):
