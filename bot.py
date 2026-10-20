@@ -91,8 +91,11 @@ def process_batch(batch_df, batch_number, total_count):
     for idx, row in batch_df.iterrows():
         current_num = len(processed_rows) + 1
         
-        # Поиск колонки со ссылкой
-                # Улучшенный поиск колонки со ссылкой
+        # Отладка колонок для первой строки
+        if current_num == 1:
+            print(f"📋 Доступные колонки в CSV: {list(row.index)}")
+
+        # Улучшенный поиск колонки со ссылкой
         link_col = next((col for col in row.index if 'ссылк' in str(col).lower() or 'url' in str(col).lower() or 'kaspi' in str(col).lower() or 'http' in str(col).lower()), None)
         if not link_col:
             for col in row.index:
@@ -100,8 +103,10 @@ def process_batch(batch_df, batch_number, total_count):
                     link_col = col
                     break
         if not link_col:
+            print(f"⚠️ Пропущена строка {current_num}: не найдена колонка со ссылкой!")
             continue
         url = str(row[link_col]).strip()
+
 
         
         # Поиск SKU / Артикула
