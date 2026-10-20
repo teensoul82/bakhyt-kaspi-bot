@@ -7,3 +7,7 @@ pandas
 openpyxl
 beautifulsoup4
 requests
+pandas
+requests
+beautifulsoup4
+pyTelegramBotAPI
