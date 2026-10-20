@@ -4,7 +4,7 @@ import random
 import re
 import pandas as pd
 import telegram
-from curl_cffi import requests
+from playwright.sync_api import sync_playwright
 
 # --- НАСТРОЙКИ ---
 KASPI_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="
@@ -12,13 +12,12 @@ TELEGRAM_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"
 TELEGRAM_CHAT_ID = "7663437881"
 DEFAULT_MIN_PN = 1000
 
-def get_competitor_price(url):
+def get_competitor_price(page, url):
     try:
         url = str(url).strip()
         if not url.startswith('http'):
             url = "https://" + url if not url.startswith('/') else "https:" + url
 
-        # Поиск ID товара
         match_id = re.search(r'-([0-9]{6,})', url)
         if not match_id:
             print(f"⚠️ Не удалось найти ID в ссылке: {url}")
@@ -26,25 +25,14 @@ def get_competitor_price(url):
         product_id = match_id.group(1)
 
         api_url = f"https://kaspi.kz/yml/offer-view/v1/offers/{product_id}?cityId=750000000&limit=10"
-        
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": f"https://kaspi.kz/shop/p/product-{product_id}/",
-            "X-Requested-With": "XMLHttpRequest"
-        }
-        
-        # Делаем запрос с полной маскировкой TLS-отпечатка под Chrome 120
-        response = requests.get(
-            api_url, 
-            headers=headers, 
-            impersonate="chrome120", 
-            timeout=15
-        )
-        
-        print(f"🔍 SKU {product_id} (статус {response.status_code})")
 
-        if response.status_code == 200:
+        # Делаем запрос из контекста реального браузера с установленными куками
+        response = page.goto(api_url, wait_until="domcontentloaded", timeout=20000)
+        status_code = response.status if response else 0
+
+        print(f"🔍 SKU {product_id} (статус {status_code})")
+
+        if status_code == 200:
             data = response.json()
             offers = data.get('offers', [])
             if offers:
@@ -68,7 +56,7 @@ def send_telegram_report(batch_number, df, success):
     except Exception as e:
         print(f"Ошибка Telegram: {e}")
 
-def process_batch(batch_df, batch_number, total_count):
+def process_batch(page, batch_df, batch_number, total_count):
     processed_rows = []
     
     for idx, row in batch_df.iterrows():
@@ -92,7 +80,7 @@ def process_batch(batch_df, batch_number, total_count):
         min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PN
         
         time.sleep(random.uniform(5.0, 10.0))
-        competitor_price = get_competitor_price(url)
+        competitor_price = get_competitor_price(page, url)
         
         if competitor_price:
             target_price = competitor_price - 1
@@ -136,11 +124,37 @@ def main():
         batch_size = 250
         total_rows = len(df)
         
-        for i in range(0, total_rows, batch_size):
-            batch_df = df.iloc[i:i+batch_size]
-            batch_num = (i // batch_size) + 1
-            print(f"🚀 Обработка пачки №{batch_num}...")
-            process_batch(batch_df, batch_num, total_rows)
+        # Инициализация эмулятора браузера
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            )
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800}
+            )
+            page = context.new_page()
+
+            # Сначала один раз открываем главную Kaspi, чтобы получить необходимые cookie-файлы
+            try:
+                page.goto("https://kaspi.kz/shop/", timeout=20000)
+                time.sleep(3)
+            except Exception as e:
+                print(f"⚠️ Предупреждение при стартовой загрузке Kaspi: {e}")
+
+            for i in range(0, total_rows, batch_size):
+                batch_df = df.iloc[i:i+batch_size]
+                batch_num = (i // batch_size) + 1
+                print(f"🚀 Обработка пачки №{batch_num}...")
+                process_batch(page, batch_df, batch_num, total_rows)
+
+            browser.close()
+
         print("✅ Все пачки успешно обработаны!")
     else:
         print(f"⚠️ Файл '{file_name}' не найден!")
