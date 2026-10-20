@@ -144,17 +144,23 @@ def process_batch(batch_df, batch_number):
         time.sleep(random.uniform(4.0, 7.0))
         competitor_price = get_competitor_price(url)
         
-        if competitor_price:
-            target_price = competitor_price - 1
-            if target_price < min_price:
-                final_price = min_price
-                status = f"Сработал мин. порог ({int(min_price)} ₸)"
-            else:
-                final_price = target_price
-                status = f"Снижено на 1 ₸ от конкурента ({competitor_price} ₸)"
-        else:
-            final_price = min_price
-            status = "Конкурентов нет / Мин. порог"
+        # --- ПРАВИЛЬНАЯ ЛОГИКА РЕПРИСИНГА ---
+if competitor_price is not None:
+    # Конкурент есть: ставим на 1 тенге ниже него
+    new_price = competitor_price - 1
+    
+    # Но проверяем, чтобы цена не упала ниже вашего минимального порога
+    if new_price < min_price:
+        new_price = min_price
+        print(f"Конкурент демпингует ({competitor_price}), но держим мин. порог: {new_price}")
+    else:
+        print(f"Конкурент найден ({competitor_price}), наша новая цена: {new_price}")
+else:
+    # КОНКУРЕНТОВ НЕТ: НЕ ТРОГАЕМ ЦЕНУ! Оставляем текущую (или пропускаем обновление)
+    print("Конкурентов нет. Цена не меняется, держим текущую.")
+    # Здесь можно либо пропустить отправку в API, либо оставить вашу базовую цену
+    continue 
+
             
         print(f"[{current_num}/{total_count}] SKU: {sku} | Конкурент: {competitor_price if competitor_price else 'Нет'} -> Итог: {int(final_price)} ₸ ({status})")
             
