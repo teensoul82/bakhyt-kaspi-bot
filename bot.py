@@ -68,7 +68,10 @@ def process_batch(batch_df, batch_number):
     
     for idx, row in batch_df.iterrows():
         current_num = len(processed_rows) + 1
-        url = str(row['id']).strip()
+                # Автоматический поиск колонки со ссылкой
+        link_col = next((col for col in row.index if str(col).strip().lower() in ['id', 'ссылка', 'url', 'link']), row.index[0])
+        url = str(row[link_col]).strip()
+
         sku = str(row['Артикул']).strip()
         title = str(row['Название']).strip() if 'Название' in row else ''
         min_price_val = row.get('min_price', DEFAULT_MIN_PRICE)
