@@ -53,12 +53,10 @@ def get_competitor_price(url):
                     
         if prices:
             found_price = min(prices)
-            print(f"Найдена цена конкурента: {found_price}")
             return found_price
             
         return None
     except Exception as e:
-        print(f"[Ошибка парсинга {url}]: {e}")
         return None
 
 
