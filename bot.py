@@ -14,37 +14,56 @@ DEFAULT_MIN_PN = 1000
 
 def get_competitor_price(url):
     try:
+        url = str(url).strip()
+        if not url.startswith('http'):
+            url = "https://" + url if not url.startswith('/') else "https:" + url
+
+        # Извлекаем SKU / ID товара из ссылки для запроса к внутреннему API Kaspi
+        import re
+        match_id = re.search(r'-([0-9]{6,})/?(\?|$)', url)
+        if not match_id:
+            return None
+        product_id = match_id.group(1)
+
+        # Мобильный API-эндпоинт Kaspi для цен (не блокируется Cloudflare)
+        api_url = f"https://kaspi.kz/yml/offer-view/v1/offers/{product_id}?cityId=750000000&limit=10"
+        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://kaspi.kz/"
+            "Accept": "application/json, text/plain, */*",
+            "Referer": url,
+            "X-Requested-With": "XMLHttpRequest"
         }
-        response = requests.get(url, headers=headers, timeout=15)
         
-        if response.status_code != 200:
-            return None
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        prices = []
-        
-        import re
-        text = soup.get_text()
-        matches = re.findall(r'(\d{2,6}\s*)[₸тг]', text)
-        for m in matches:
-            clean = "".join(filter(str.isdigit, m))
-            if clean:
-                val = float(clean)
-                if 100 <= val <= 10000000:
-                    prices.append(val)
-                    
-        if prices:
-            found_price = min(prices)
-            return found_price
-            
+        response = requests.get(api_url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            offers = data.get('offers', [])
+            if offers:
+                prices = [offer.get('price') for offer in offers if offer.get('price')]
+                if prices:
+                    return float(min(prices))
+
+        # Запасной вариант через HTML, если API недоступен
+        resp_html = requests.get(url, headers=headers, timeout=15)
+        if resp_html.status_code == 200:
+            soup = BeautifulSoup(resp_html.text, 'html.parser')
+            text = soup.get_text()
+            matches = re.findall(r'(\d{2,6}\s*)[₸тг]', text)
+            prices = []
+            for m in matches:
+                clean = "".join(filter(str.isdigit, m))
+                if clean:
+                    val = float(clean)
+                    if 100 <= val <= 10000000:
+                        prices.append(val)
+            if prices:
+                return min(prices)
+
         return None
     except Exception as e:
         return None
+
 
 def send_to_kaspi_api(df):
     # Здесь ваша функция отправки в API Kaspi
