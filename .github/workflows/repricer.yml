@@ -20,7 +20,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas python-telegram-bot curl_cffi
+          pip install pandas python-telegram-bot playwright
+          playwright install chromium
+          playwright install-deps
 
       - name: Run repricer script
         env:
