@@ -121,7 +121,10 @@ def process_batch(batch_df, batch_number):
         link_col = next((col for col in row.index if str(col).strip().lower() in ['id', 'ссылка', 'url', 'link']), row.index[0])
         url = str(row[link_col]).strip()
         
-        sku = str(row['Артикул']).strip() if 'Артикул' in row else 'N/A'
+                # Универсальный поиск колонки с артикулом/SKU
+        sku_col = next((col for col in row.index if str(col).strip().lower() in ['артикул', 'sku', 'код', 'code']), None)
+        sku = str(row[sku_col]).strip() if sku_col and pd.notnull(row[sku_col]) else 'N/A'
+
         title = str(row['Название']).strip() if 'Название' in row else ''
         min_price_val = row.get('min_price', DEFAULT_MIN_PRICE)
         min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PRICE
