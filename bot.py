@@ -157,7 +157,7 @@ else:
     continue 
 
             
-        print(f"[{current_num}/{total_count}] SKU: {sku} | Конкурент: {competitor_price if competitor_price else 'Нет'} -> Итог: {int(final_price)} ₸ ({status})")
+    print(f"[{current_num}/{total_count}] SKU: {sku} | Конкурент: {competitor_price if competitor_price else 'Нет'} -> Итог: {int(final_price)} ₸ ({status})")
             
         processed_rows.append({
             'Артикул': sku, 'Название': title, 'Мин_цена': int(min_price),
