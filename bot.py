@@ -18,14 +18,12 @@ def get_competitor_price(url):
         if not url.startswith('http'):
             url = "https://" + url if not url.startswith('/') else "https:" + url
 
-        # Извлекаем SKU / ID товара из ссылки для запроса к внутреннему API Kaspi
         import re
         match_id = re.search(r'-([0-9]{6,})/?(\?|$)', url)
         if not match_id:
             return None
         product_id = match_id.group(1)
 
-        # Мобильный API-эндпоинт Kaspi для цен (не блокируется Cloudflare)
         api_url = f"https://kaspi.kz/yml/offer-view/v1/offers/{product_id}?cityId=750000000&limit=10"
         
         headers = {
@@ -36,33 +34,23 @@ def get_competitor_price(url):
         }
         
         response = requests.get(api_url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            offers = data.get('offers', [])
-            if offers:
-                prices = [offer.get('price') for offer in offers if offer.get('price')]
-                if prices:
-                    return float(min(prices))
+        
+        # Выведем в лог статус ответа, чтобы понять блокирует ли Cloudflare
+        if response.status_code != 200:
+            print(f"⚠️ Блокировка/Ошибка API для SKU {product_id}: статус {response.status_code}")
+            return None
 
-        # Запасной вариант через HTML, если API недоступен
-        resp_html = requests.get(url, headers=headers, timeout=15)
-        if resp_html.status_code == 200:
-            soup = BeautifulSoup(resp_html.text, 'html.parser')
-            text = soup.get_text()
-            matches = re.findall(r'(\d{2,6}\s*)[₸тг]', text)
-            prices = []
-            for m in matches:
-                clean = "".join(filter(str.isdigit, m))
-                if clean:
-                    val = float(clean)
-                    if 100 <= val <= 10000000:
-                        prices.append(val)
+        data = response.json()
+        offers = data.get('offers', [])
+        if offers:
+            prices = [offer.get('price') for offer in offers if offer.get('price')]
             if prices:
-                return min(prices)
+                return float(min(prices))
 
         return None
     except Exception as e:
         return None
+
 
 
 def send_to_kaspi_api(df):
