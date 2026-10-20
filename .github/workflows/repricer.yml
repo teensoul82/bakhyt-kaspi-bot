@@ -2,13 +2,12 @@ name: Kaspi Repricer
 
 on:
   schedule:
-    # Запуск 1 раз в сутки в 03:00 по времени Астаны (22:00 UTC)
     - cron: '0 22 * * *'
   workflow_dispatch:
 
 jobs:
   run-bot:
-    runs-runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
