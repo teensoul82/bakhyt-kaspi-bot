@@ -118,7 +118,7 @@ def process_batch(batch_df, batch_number, total_count):
         min_price_val = row.get('min_price', DEFAULT_MIN_PN)
         min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PN
         
-        time.sleep(random.uniform(2.0, 4.0))
+        time.sleep(random.uniform(6.0, 12.0))
         competitor_price = get_competitor_price(url)
         
         if competitor_price:
