@@ -1,213 +1,174 @@
 import os
-import asyncio
-import logging
+import time
+import random
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import re
+import requests
 import pandas as pd
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import FSInputFile
-from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import telebot
 
-# ---------------------------------------------------------
-# Настройки
-# ---------------------------------------------------------
-API_TOKEN = '8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc'
-ADMIN_CHAT_ID = None  
-MIN_PRICE_LIMIT = 800 # Жесткий минимум (800 ₸)
+# ==================== НАСТРОЙКИ ====================
+TELEGRAM_BOT_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"  # 👈 Ваш старый токен телеграм-бота
+KASPI_API_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="      # 👈 Ваш токен от кабинета Kaspi
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
+CSV_FILE = "price-list.csv"
+KASPI_API_URL = "https://kaspi.kz/shop/api/v2/offers"
+DEFAULT_MIN_PRICE = 800
+PAUSE_BETWEEN_BATCHES_MINUTES = 35
 
-# ---------------------------------------------------------
-# 1. Веб-сервер для поддержки Render (Port Binding)
-# ---------------------------------------------------------
-class HealthCheckHandler(BaseHTTPRequestHandler):
+# Инициализация телеграм-бота
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+}
+
+# --- 1. ФУНКЦИИ РЕПРИСЕРА ---
+def get_competitor_price(url):
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        if response.status_code != 200:
+            return None
+        soup = BeautifulSoup(response.text, 'html.parser')
+        price_elements = soup.find_all(class_=re.compile(r'sellers-table__price|sellers-list__price|price'))
+        prices = []
+        for elem in price_elements:
+            clean_price = re.sub(r'[^\d]', '', elem.text.strip())
+            if clean_price and clean_price.isdigit():
+                prices.append(int(clean_price))
+        if prices:
+            return min(prices)
+    except Exception as e:
+        print(f"[Ошибка чтения ссылки] {url}: {e}")
+    return None
+
+def send_to_kaspi_api(batch_df):
+    headers = {"Content-Type": "application/json", "X-Auth-Token": KASPI_API_TOKEN}
+    offers_payload = [{"sku": str(row['Артикул']), "price": int(row['Новая_цена'])} for _, row in batch_df.iterrows()]
+    payload = {"data": offers_payload}
+    print(f"\n[Kaspi API] Отправляем новые цены для {len(offers_payload)} товаров...")
+    try:
+        res = requests.post(KASPI_API_URL, json=payload, headers=headers, timeout=15)
+        if res.status_code == 200:
+            print(f"[Успех API] Цены пачки успешно обновлены!")
+            return True
+        else:
+            print(f"[Ошибка API {res.status_code}]: {res.text}")
+    except Exception as err:
+        print(f"[Ошибка сети API]: {err}")
+    return False
+
+def process_batch(batch_df, batch_number):
+    print(f"\n================ СТАРТ ПАЧКИ №{batch_number} ({len(batch_df)} товаров) ================")
+    processed_rows = []
+    
+    for idx, row in batch_df.iterrows():
+        url = str(row['id']).strip()
+        sku = str(row['Артикул']).strip()
+        title = str(row['Название']).strip() if 'Название' in row else ''
+        min_price_val = row.get('min_price', DEFAULT_MIN_PRICE)
+        min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PRICE
+        min_price = max(min_price, DEFAULT_MIN_PRICE)
+        
+        time.sleep(random.uniform(4.0, 7.0))
+        competitor_price = get_competitor_price(url)
+        
+        if competitor_price:
+            target_price = competitor_price - 1
+            if target_price < min_price:
+                final_price = min_price
+                status = f"Сработал мин. порог ({int(min_price)} ₸)"
+            else:
+                final_price = target_price
+                status = f"Снижено на 1 ₸ от конкурента ({competitor_price} ₸)"
+        else:
+            final_price = min_price
+            status = "Конкурентов нет / Мин. порог"
+            
+        processed_rows.append({
+            'Артикул': sku, 'Название': title, 'Мин_цена': int(min_price),
+            'Цена_конкурента': competitor_price if competitor_price else 'Не найден',
+            'Новая_цена': int(final_price), 'Статус': status, 'Ссылка': url
+        })
+        
+    result_df = pd.DataFrame(processed_rows)
+    send_to_kaspi_api(result_df)
+    report_filename = f"report_batch_{batch_number}.csv"
+    result_df.to_csv(report_filename, index=False, encoding='utf-8-sig')
+    print(f"[ОТЧЕТ] Сохранен в {report_filename}")
+
+def run_repricer_background():
+    """Фоновый цикл реприсинга"""
+    print("🤖 Фоновый реприсер запущен!")
+    time.sleep(10)  # Даем боту время спокойно стартовать
+    while True:
+        try:
+            if os.path.exists(CSV_FILE):
+                try:
+                    df = pd.read_csv(CSV_FILE)
+                except Exception:
+                    df = pd.read_csv(CSV_FILE, header=1)
+                df.columns = [str(c).strip() for c in df.columns]
+                
+                batch_1 = df.iloc[:250].copy()
+                batch_2 = df.iloc[250:].copy()
+                
+                process_batch(batch_1, batch_number=1)
+                
+                if len(batch_2) > 0:
+                    print(f"\n⏳ Пачка №1 завершена. Ожидание {PAUSE_BETWEEN_BATCHES_MINUTES} минут...")
+                    time.sleep(PAUSE_BETWEEN_BATCHES_MINUTES * 60)
+                    process_batch(batch_2, batch_number=2)
+                    
+                print("\n🎉 Цикл реприсинга завершен. Следующий запуск через 24 часа.")
+            else:
+                print(f"[Предупреждение] Файл {CSV_FILE} не найден на сервере.")
+        except Exception as e:
+            print(f"[Ошибка в фоновом реприсере]: {e}")
+            
+        # Повторять проверку цен раз в сутки
+        time.sleep(86400)
+
+
+# --- 2. TELEGRAM КОМАНДЫ ---
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message, "Привет! Бот и автоматический реприсер успешно работают на сервере.")
+
+
+# --- 3. HTTP СЕРВЕР ДЛЯ RENDER (чтобы хостинг не усыплял порт) ---
+class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot status: OK")
-    
-    def log_message(self, format, *args):
-        pass
+        self.wfile.write(b"Kaspi Repricer Bot is running live!")
 
-def start_health_server():
+def run_http_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     print(f"--- HTTP-сервер открыл порт {port} для Render ---")
     server.serve_forever()
 
-threading.Thread(target=start_health_server, daemon=True).start()
 
-# ---------------------------------------------------------
-# 2. Улучшенный парсинг Kaspi по SKU
-# ---------------------------------------------------------
-async def fetch_kaspi_top_price(page, sku, model_name):
-    try:
-        search_query = str(sku).strip() if pd.notna(sku) and str(sku).strip() else str(model_name).strip()
-        url = f"https://kaspi.kz/shop/search/?text={search_query}"
-        
-        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        await asyncio.sleep(2) # Даем странице прогрузиться
-        
-        # Пробуем найти цены через разные селекторы Kaspi
-        price_selectors = [
-            ".item-card__prices-price",
-            ".item-card__price-value",
-            "a.item-card__mers-link",
-            ".merchants-count"
-        ]
-        
-        top_price = None
-        seller_count = 1
-
-        # Ищем карточку товара
-        cards = await page.query_selector_all(".item-card")
-        if cards:
-            # Берем первый найденный товар в выдаче
-            first_card = cards[0]
-            
-            # Ищем цену внутри первой карточки
-            price_elem = await first_card.query_selector(".item-card__prices-price, [class*='price']")
-            if price_elem:
-                price_text = await price_elem.inner_text()
-                clean_digits = ''.join(filter(str.isdigit, price_text))
-                if clean_digits:
-                    top_price = int(clean_digits)
-            
-            # Проверяем количество продавцов, если есть такой элемент
-            merchants_elem = await first_card.query_selector("a.item-card__mers-link, [class*='merchants']")
-            if merchants_elem:
-                m_text = await merchants_elem.inner_text()
-                m_digits = ''.join(filter(str.isdigit, m_text))
-                if m_digits:
-                    seller_count = int(m_digits)
-                else:
-                    seller_count = 2 # Если ссылка на продавцов есть, значит их больше 1
-            else:
-                seller_count = 1 # Если плашки нет, возможно продавец один
-
-        return top_price, seller_count
-    except Exception as e:
-        print(f"Ошибка парсинга SKU {sku}: {e}")
-        return None, 1
-
-# ---------------------------------------------------------
-# 3. Тестовый запуск реприсинга (на 100 товаров)
-# ---------------------------------------------------------
-async def run_test_repricing(chat_id):
-    await bot.send_message(
-        chat_id, 
-        "🔍 **Запущен улучшенный тест по SKU (100 товаров)!**\nПарсер начал работу..."
-    )
-    
-    kaspi_file = "kaspi-price-list.xlsx"
-    if not os.path.exists(kaspi_file):
-        await bot.send_message(chat_id, "⚠️ Файл `kaspi-price-list.xlsx` не найден.")
-        return
-
-    try:
-        df_kaspi = pd.read_excel(kaspi_file)
-        problem_items = []
-        updated_count = 0
-        unchanged_count = 0
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
-
-            # Тестируем на первых 100 товарах
-            test_df = df_kaspi.head(100)
-
-            for idx, row in test_df.iterrows():
-                sku = str(row.get('SKU', '')).strip()
-                model = str(row.get('model', 'Товар')).strip()
-                current_price = float(row.get('price', 0))
-                
-                top_price, seller_count = await fetch_kaspi_top_price(page, sku, model)
-
-                if top_price is None or seller_count <= 1:
-                    unchanged_count += 1
-                else:
-                    new_price = top_price - 1
-                    
-                    if top_price < MIN_PRICE_LIMIT:
-                        df_kaspi.at[idx, 'price'] = MIN_PRICE_LIMIT
-                        problem_items.append({
-                            'sku': sku,
-                            'model': model,
-                            'top_price': top_price
-                        })
-                        updated_count += 1
-                    else:
-                        target_price = max(new_price, MIN_PRICE_LIMIT)
-                        df_kaspi.at[idx, 'price'] = int(target_price)
-                        updated_count += 1
-
-            await browser.close()
-
-        output_file = "kaspi-price-list-updated.xlsx"
-        df_kaspi.to_excel(output_file, index=False)
-
-        msg = (
-            f"✅ **Тест с улучшенным парсером завершён!**\n\n"
-            f"📦 Проверено товаров: `100`\n"
-            f"🎯 Обновлено цен под 1-е место: `{updated_count}`\n"
-            f"🛡 Без изменений (нет конкурентов / не найдено): `{unchanged_count}`\n"
-            f"⚠️ Демпинг ниже {MIN_PRICE_LIMIT} ₸: `{len(problem_items)}`"
-        )
-        await bot.send_message(chat_id, msg)
-        
-        file_to_send = FSInputFile(output_file)
-        await bot.send_document(chat_id, file_to_send, caption="📄 Обновленный прайс-лист")
-
-        if problem_items:
-            report_text = f"🚨 **Товары с демпингом ниже {MIN_PRICE_LIMIT} ₸:**\n\n"
-            for item in problem_items[:15]:
-                report_text += f"• **{item['sku']}** — {item['model']}\n  └ 📉 Конкурент: `{item['top_price']} ₸`\n"
-            await bot.send_message(chat_id, report_text)
-
-    except Exception as e:
-        err_msg = f"❌ Ошибка: {str(e)}"
-        print(err_msg)
-        await bot.send_message(chat_id, err_msg)
-
-# ---------------------------------------------------------
-# 4. Команды Telegram
-# ---------------------------------------------------------
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    global ADMIN_CHAT_ID
-    ADMIN_CHAT_ID = message.chat.id
-    await message.answer("🤖 Бот с улучшенным поиском по SKU готов к работе. Отправьте файл `kaspi-price-list.xlsx`.")
-
-@dp.message(Command("reprice"))
-async def cmd_reprice(message: types.Message):
-    await run_test_repricing(message.chat.id)
-
-@dp.message()
-async def handle_docs(message: types.Message):
-    if message.document and message.document.file_name.endswith('.xlsx'):
-        file_id = message.document.file_id
-        file = await bot.get_file(file_id)
-        await bot.download_file(file.file_path, "kaspi-price-list.xlsx")
-        await message.answer("💾 Файл получен! Запускаю улучшенный парсинг по SKU...")
-        await run_test_repricing(message.chat.id)
-    else:
-        await message.answer("Пожалуйста, отправьте `.xlsx` файл.")
-
-# ---------------------------------------------------------
-# 5. Запуск
-# ---------------------------------------------------------
-async def main():
-    print("--- Улучшенный бот запущен! ---")
-    await dp.start_polling(bot)
-
+# --- 4. ГЛАВНЫЙ СТАРТ ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Запускаем HTTP-сервер в отдельном потоке
+    t_http = threading.Thread(target=run_http_server, daemon=True)
+    t_http.start()
+    
+    # Запускаем фоновый реприсер в отдельном потоке
+    t_repricer = threading.Thread(target=run_repricer_background, daemon=True)
+    t_repricer.start()
+    
+    print("--- Улучшенный бот запущен! ---")
+    # Запускаем прием сообщений телеграм-бота (без конфликтов)
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=3, timeout=20)
+        except Exception as e:
+            print(f"Ошибка соединения с Telegram: {e}")
+            time.sleep(10)
