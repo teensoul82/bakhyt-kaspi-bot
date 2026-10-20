@@ -11,3 +11,7 @@ pandas
 requests
 beautifulsoup4
 pyTelegramBotAPI
+requests
+pandas
+beautifulsoup4
+python-telegram-bot
