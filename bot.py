@@ -35,15 +35,12 @@ def get_competitor_price(url):
         }
         response = requests.get(url, headers=headers, timeout=15)
         
-        # Если статус не 200 или страница заблокирована
         if response.status_code != 200:
-            print(f"[Блокировка/Ошибка] Код ответа Kaspi для {url}: {response.status_code}")
             return None
         
         soup = BeautifulSoup(response.text, 'html.parser')
         prices = []
         
-        # Универсальный поиск цен со знаком тенге или в блоках цен
         import re
         text = soup.get_text()
         matches = re.findall(r'(\d{2,6}\s*)[₸тг]', text)
@@ -51,12 +48,12 @@ def get_competitor_price(url):
             clean = "".join(filter(str.isdigit, m))
             if clean:
                 val = float(clean)
-                if 100 <= val <= 10000000: # Разумный диапазон цен
+                if 100 <= val <= 10000000:
                     prices.append(val)
                     
         if prices:
             found_price = min(prices)
-            print( найдена цена: {found_price})
+            print(f"Найдена цена конкурента: {found_price}")
             return found_price
             
         return None
