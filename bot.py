@@ -21,6 +21,7 @@ def get_competitor_price(url):
         import re
         match_id = re.search(r'-([0-9]{6,})/?(\?|$)', url)
         if not match_id:
+            print(f"⚠️ Не удалось найти ID в ссылке: {url}")
             return None
         product_id = match_id.group(1)
 
@@ -35,21 +36,22 @@ def get_competitor_price(url):
         
         response = requests.get(api_url, headers=headers, timeout=15)
         
-        # Выведем в лог статус ответа, чтобы понять блокирует ли Cloudflare
-        if response.status_code != 200:
-            print(f"⚠️ Блокировка/Ошибка API для SKU {product_id}: статус {response.status_code}")
-            return None
+        # Выведем первые 150 символов ответа в лог для проверки
+        print(f"🔍 Ответ API для SKU {product_id} (код {response.status_code}): {response.text[:150]}...")
 
-        data = response.json()
-        offers = data.get('offers', [])
-        if offers:
-            prices = [offer.get('price') for offer in offers if offer.get('price')]
-            if prices:
-                return float(min(prices))
+        if response.status_code == 200:
+            data = response.json()
+            offers = data.get('offers', [])
+            if offers:
+                prices = [offer.get('price') for offer in offers if offer.get('price')]
+                if prices:
+                    return float(min(prices))
 
         return None
     except Exception as e:
+        print(f"❌ Ошибка парсинга для {url}: {e}")
         return None
+
 
 
 
