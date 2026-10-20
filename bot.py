@@ -64,8 +64,10 @@ def send_to_kaspi_api(batch_df):
 def process_batch(batch_df, batch_number):
     print(f"\n================ СТАРТ ПАЧКИ №{batch_number} ({len(batch_df)} товаров) ================")
     processed_rows = []
+    total_count = len(batch_df)
     
     for idx, row in batch_df.iterrows():
+        current_num = len(processed_rows) + 1
         url = str(row['id']).strip()
         sku = str(row['Артикул']).strip()
         title = str(row['Название']).strip() if 'Название' in row else ''
@@ -88,6 +90,8 @@ def process_batch(batch_df, batch_number):
             final_price = min_price
             status = "Конкурентов нет / Мин. порог"
             
+        print(f"[{current_num}/{total_count}] SKU: {sku} | Конкурент: {competitor_price if competitor_price else 'Нет'} -> Итог: {int(final_price)} ₸ ({status})")
+            
         processed_rows.append({
             'Артикул': sku, 'Название': title, 'Мин_цена': int(min_price),
             'Цена_конкурента': competitor_price if competitor_price else 'Не найден',
@@ -95,10 +99,17 @@ def process_batch(batch_df, batch_number):
         })
         
     result_df = pd.DataFrame(processed_rows)
-    send_to_kaspi_api(result_df)
+    
+    # Сохраняем локально отчет в CSV
     report_filename = f"report_batch_{batch_number}.csv"
     result_df.to_csv(report_filename, index=False, encoding='utf-8-sig')
-    print(f"[ОТЧЕТ] Сохранен в {report_filename}")
+    
+    # Отправляем в Kaspi API
+    success_api = send_to_kaspi_api(result_df)
+    
+    # Отправляем отчет в Телеграм
+    send_telegram_report(batch_number, result_df, success_api)
+    print(f"[ОТЧЕТ] Пачка №{batch_number} обработана и отправлена в Telegram.")
 
 def run_repricer_background():
     """Фоновый цикл реприсинга"""
