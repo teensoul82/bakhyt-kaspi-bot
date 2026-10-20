@@ -18,7 +18,8 @@ def get_competitor_price(url):
         if not url.startswith('http'):
             url = "https://" + url if not url.startswith('/') else "https:" + url
 
-        match_id = re.search(r'-([0-9]{6,})/?(\?|$)', url)
+        # Надежный поиск ID товара (6 и более цифр после дефиса)
+        match_id = re.search(r'-([0-9]{6,})', url)
         if not match_id:
             print(f"⚠️ Не удалось найти ID в ссылке: {url}")
             return None
