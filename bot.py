@@ -2,9 +2,9 @@ import os
 import time
 import random
 import re
-import requests
 import pandas as pd
 import telegram
+from curl_cffi import requests
 
 # --- НАСТРОЙКИ ---
 KASPI_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="
@@ -12,27 +12,13 @@ TELEGRAM_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"
 TELEGRAM_CHAT_ID = "7663437881"
 DEFAULT_MIN_PN = 1000
 
-def get_free_proxy():
-    """Автоматически получает случайный бесплатный прокси"""
-    try:
-        url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&timeout=5000"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            proxies_list = [p.strip() for p in res.text.splitlines() if p.strip()]
-            if proxies_list:
-                proxy = random.choice(proxies_list)
-                return f"http://{proxy}"
-    except Exception as e:
-        print(f"⚠️ Не удалось получить прокси: {e}")
-    return None
-
 def get_competitor_price(url):
     try:
         url = str(url).strip()
         if not url.startswith('http'):
             url = "https://" + url if not url.startswith('/') else "https:" + url
 
-        # Поиск ID товара (6 и более цифр после дефиса)
+        # Поиск ID товара
         match_id = re.search(r'-([0-9]{6,})', url)
         if not match_id:
             print(f"⚠️ Не удалось найти ID в ссылке: {url}")
@@ -42,24 +28,21 @@ def get_competitor_price(url):
         api_url = f"https://kaspi.kz/yml/offer-view/v1/offers/{product_id}?cityId=750000000&limit=10"
         
         headers = {
-            "Host": "kaspi.kz",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": f"https://kaspi.kz/shop/p/product-{product_id}/",
             "X-Requested-With": "XMLHttpRequest"
         }
         
-        session = requests.Session()
+        # Делаем запрос с полной маскировкой TLS-отпечатка под Chrome 120
+        response = requests.get(
+            api_url, 
+            headers=headers, 
+            impersonate="chrome120", 
+            timeout=15
+        )
         
-        # Получаем и подключаем бесплатный прокси
-        proxy = get_free_proxy()
-        proxies_dict = {"http": proxy, "https": proxy} if proxy else None
-        
-        response = session.get(api_url, headers=headers, proxies=proxies_dict, timeout=15)
-        
-        proxy_info = f" [Прокси: {proxy}]" if proxy else " [Без прокси]"
-        print(f"🔍 SKU {product_id} (статус {response.status_code}){proxy_info}")
+        print(f"🔍 SKU {product_id} (статус {response.status_code})")
 
         if response.status_code == 200:
             data = response.json()
@@ -108,7 +91,6 @@ def process_batch(batch_df, batch_number, total_count):
         min_price_val = row.get('min_price', DEFAULT_MIN_PN)
         min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PN
         
-        # Пауза между запросами для безопасности
         time.sleep(random.uniform(5.0, 10.0))
         competitor_price = get_competitor_price(url)
         
