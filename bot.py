@@ -167,19 +167,19 @@ def run_http_server():
 
 # --- 4. ГЛАВНЫЙ СТАРТ ---
 if __name__ == "__main__":
-    # Запускаем HTTP-сервер в отдельном потоке
-    t_http = threading.Thread(target=run_http_server, daemon=True)
-    t_http.start()
-    
     # Запускаем фоновый реприсер в отдельном потоке
     t_repricer = threading.Thread(target=run_repricer_background, daemon=True)
     t_repricer.start()
     
-    print("--- Улучшенный бот запущен! ---")
-    # Запускаем прием сообщений телеграм-бота (без конфликтов)
-    while True:
-        try:
-            bot.polling(none_stop=True, interval=3, timeout=20)
-        except Exception as e:
-            print(f"Ошибка соединения с Telegram: {e}")
-            time.sleep(10)
+    # Запускаем Телеграм-бота в отдельном потоке
+    t_bot = threading.Thread(target=lambda: bot.infinity_polling(none_stop=True, interval=3), daemon=True)
+    t_bot.start()
+    
+    print("--- Улучшенный бот и фоновые задачи запущены! ---")
+    
+    # HTTP-сервер запускаем в ОСНОВНОМ потоке (чтобы Render сразу видел открытый порт)
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    print(f"--- HTTP-сервер открыл порт {port} для Render ---")
+    server.serve_forever()
+
