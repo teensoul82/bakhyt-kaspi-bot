@@ -87,8 +87,8 @@ def process_batch(batch_df, batch_number, total_count):
     for idx, row in batch_df.iterrows():
         current_num = len(processed_rows) + 1
         
-        # Улучшенный поиск колонки со ссылкой
-        link_col = next((col for col in row.index if 'ссылк' in str(col).lower() or 'url' in str(col).lower() or 'kaspi' in str(col).lower() or 'http' in str(col).lower()), None)
+        # Ищем колонку со ссылкой: проверяем слова в названии ИЛИ смотрим, где лежат ссылки с 'http'
+        link_col = next((col for col in row.index if 'ссылк' in str(col).lower() or 'url' in str(col).lower() or 'kaspi' in str(col).lower() or 'id' in str(col).lower()), None)
         if not link_col:
             for col in row.index:
                 if 'http' in str(row[col]):
@@ -100,7 +100,7 @@ def process_batch(batch_df, batch_number, total_count):
         url = str(row[link_col]).strip()
         
         # Поиск SKU / Артикула
-        sku_col = next((col for col in row.index if 'артикул' in str(col).lower() or 'sku' in str(col).lower() or 'id' in str(col).lower()), None)
+        sku_col = next((col for col in row.index if 'артикул' in str(col).lower() or 'sku' in str(col).lower()), None)
         sku = str(row[sku_col]).strip() if sku_col and pd.notnull(row[sku_col]) else "N/A"
         
         title = str(row['Название']).strip() if 'Название' in row else "Товар"
@@ -143,6 +143,7 @@ def process_batch(batch_df, batch_number, total_count):
         success_api = send_to_kaspi_api(result_df)
         send_telegram_report(batch_number, result_df, success_api)
         print(f"[ОТЧЕТ] Пачка №{batch_number} обработана.")
+
 
 # Фоновый цикл реприсера
 def run_repricer_background():
