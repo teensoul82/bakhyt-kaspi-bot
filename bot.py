@@ -28,40 +28,37 @@ def send_welcome(message):
 def get_competitor_price(url):
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://kaspi.kz/"
         }
         response = requests.get(url, headers=headers, timeout=15)
+        
+        # Если статус не 200 или страница заблокирована
         if response.status_code != 200:
+            print(f"[Блокировка/Ошибка] Код ответа Kaspi для {url}: {response.status_code}")
             return None
         
         soup = BeautifulSoup(response.text, 'html.parser')
         prices = []
         
-        # Способ 1: Ищем по возможным классам цен
-        for cls in ['price', 'merchants-table__price', 'item-card__price-value', '_price']:
-            elems = soup.find_all(class_=lambda x: x and cls in str(x).lower())
-            for el in elems:
-                clean = "".join(filter(str.isdigit, el.get_text()))
-                if clean:
-                    val = float(clean)
-                    if 50 <= val <= 10000000: # Разумные рамки цены в тенге
-                        prices.append(val)
-                        
-        # Способ 2: Универсальный поиск цен по тексту со знаком ₸
-        if not prices:
-            import re
-            text = soup.get_text()
-            matches = re.findall(r'(\d[\d\s]*)\s*[₸тг]', text)
-            for m in matches:
-                clean = "".join(filter(str.isdigit, m))
-                if clean:
-                    val = float(clean)
-                    if 50 <= val <= 10000000:
-                        prices.append(val)
-                        
+        # Универсальный поиск цен со знаком тенге или в блоках цен
+        import re
+        text = soup.get_text()
+        matches = re.findall(r'(\d{2,6}\s*)[₸тг]', text)
+        for m in matches:
+            clean = "".join(filter(str.isdigit, m))
+            if clean:
+                val = float(clean)
+                if 100 <= val <= 10000000: # Разумный диапазон цен
+                    prices.append(val)
+                    
         if prices:
-            return min(prices) # Возвращает самую низкую цену конкурента на странице
+            found_price = min(prices)
+            print( найдена цена: {found_price})
+            return found_price
+            
         return None
     except Exception as e:
         print(f"[Ошибка парсинга {url}]: {e}")
