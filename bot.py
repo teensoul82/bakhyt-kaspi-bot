@@ -18,7 +18,7 @@ def get_competitor_price(url):
         if not url.startswith('http'):
             url = "https://" + url if not url.startswith('/') else "https:" + url
 
-        # Надежный поиск ID товара (6 и более цифр после дефиса)
+        # Поиск ID товара (6 и более цифр после дефиса)
         match_id = re.search(r'-([0-9]{6,})', url)
         if not match_id:
             print(f"⚠️ Не удалось найти ID в ссылке: {url}")
@@ -116,6 +116,16 @@ def process_batch(batch_df, batch_number, total_count):
         send_telegram_report(batch_number, result_df, success_api)
 
 def main():
+    # Если запуск автоматический (по cron), делаем рандомную паузу от 0 до 5 часов
+    if os.getenv("GITHUB_EVENT_NAME") == "schedule":
+        delay_seconds = random.randint(0, 18000) # от 0 до 5 часов
+        hours_delay = delay_seconds // 3600
+        minutes_delay = (delay_seconds % 3600) // 60
+        print(f"⏳ Рандомная задержка перед стартом: {hours_delay} ч. {minutes_delay} мин...")
+        time.sleep(delay_seconds)
+    else:
+        print("⚡ Ручной запуск: начинаем работу без задержки!")
+
     file_name = "price-list.csv" 
     if os.path.exists(file_name):
         print(f"📂 Файл {file_name} найден. Читаю данные...")
