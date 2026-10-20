@@ -92,10 +92,17 @@ def process_batch(batch_df, batch_number, total_count):
         current_num = len(processed_rows) + 1
         
         # Поиск колонки со ссылкой
-        link_col = next((col for col in row.index if 'ссылк' in str(col).lower() or 'url' in str(col).lower()), None)
+                # Улучшенный поиск колонки со ссылкой
+        link_col = next((col for col in row.index if 'ссылк' in str(col).lower() or 'url' in str(col).lower() or 'kaspi' in str(col).lower() or 'http' in str(col).lower()), None)
+        if not link_col:
+            for col in row.index:
+                if 'http' in str(row[col]):
+                    link_col = col
+                    break
         if not link_col:
             continue
         url = str(row[link_col]).strip()
+
         
         # Поиск SKU / Артикула
         sku_col = next((col for col in row.index if 'артикул' in str(col).lower() or 'sku' in str(col).lower()), None)
