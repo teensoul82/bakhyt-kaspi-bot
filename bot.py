@@ -13,8 +13,8 @@ from playwright.async_api import async_playwright
 # Настройки
 # ---------------------------------------------------------
 API_TOKEN = '8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc'
-ADMIN_CHAT_ID = None  # Сохранится автоматически при вызове /start
-MIN_PRICE_LIMIT = 800 # Минимальный порог цены (в тенге)
+ADMIN_CHAT_ID = None  
+MIN_PRICE_LIMIT = 800 # Жесткий минимум (800 ₸)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -40,29 +40,53 @@ def start_health_server():
 threading.Thread(target=start_health_server, daemon=True).start()
 
 # ---------------------------------------------------------
-# 2. Быстрый парсинг Kaspi по SKU
+# 2. Улучшенный парсинг Kaspi по SKU
 # ---------------------------------------------------------
 async def fetch_kaspi_top_price(page, sku, model_name):
     try:
         search_query = str(sku).strip() if pd.notna(sku) and str(sku).strip() else str(model_name).strip()
         url = f"https://kaspi.kz/shop/search/?text={search_query}"
         
-        await page.goto(url, wait_until="domcontentloaded", timeout=12000)
-        await asyncio.sleep(1)
+        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        await asyncio.sleep(2) # Даем странице прогрузиться
         
-        offers = await page.query_selector_all(".item-card__prices-price")
-        if not offers:
-            first_price_elem = await page.query_selector(".item-card__decription .item-card__prices-price")
-            if first_price_elem:
-                price_text = await first_price_elem.inner_text()
-                clean_price = int(''.join(filter(str.isdigit, price_text)))
-                return clean_price, 2
-            return None, 1
+        # Пробуем найти цены через разные селекторы Kaspi
+        price_selectors = [
+            ".item-card__prices-price",
+            ".item-card__price-value",
+            "a.item-card__mers-link",
+            ".merchants-count"
+        ]
+        
+        top_price = None
+        seller_count = 1
 
-        first_price_text = await offers[0].inner_text()
-        top_price = int(''.join(filter(str.isdigit, first_price_text)))
-        seller_count = len(offers)
-        
+        # Ищем карточку товара
+        cards = await page.query_selector_all(".item-card")
+        if cards:
+            # Берем первый найденный товар в выдаче
+            first_card = cards[0]
+            
+            # Ищем цену внутри первой карточки
+            price_elem = await first_card.query_selector(".item-card__prices-price, [class*='price']")
+            if price_elem:
+                price_text = await price_elem.inner_text()
+                clean_digits = ''.join(filter(str.isdigit, price_text))
+                if clean_digits:
+                    top_price = int(clean_digits)
+            
+            # Проверяем количество продавцов, если есть такой элемент
+            merchants_elem = await first_card.query_selector("a.item-card__mers-link, [class*='merchants']")
+            if merchants_elem:
+                m_text = await merchants_elem.inner_text()
+                m_digits = ''.join(filter(str.isdigit, m_text))
+                if m_digits:
+                    seller_count = int(m_digits)
+                else:
+                    seller_count = 2 # Если ссылка на продавцов есть, значит их больше 1
+            else:
+                seller_count = 1 # Если плашки нет, возможно продавец один
+
         return top_price, seller_count
     except Exception as e:
         print(f"Ошибка парсинга SKU {sku}: {e}")
@@ -74,15 +98,12 @@ async def fetch_kaspi_top_price(page, sku, model_name):
 async def run_test_repricing(chat_id):
     await bot.send_message(
         chat_id, 
-        "🧪 **Запущен тест на первых 100 товарах!**\nОткрываю браузер Playwright..."
+        "🔍 **Запущен улучшенный тест по SKU (100 товаров)!**\nПарсер начал работу..."
     )
     
     kaspi_file = "kaspi-price-list.xlsx"
     if not os.path.exists(kaspi_file):
-        await bot.send_message(
-            chat_id, 
-            "⚠️ Файл `kaspi-price-list.xlsx` не найден. Пожалуйста, отправьте его боту."
-        )
+        await bot.send_message(chat_id, "⚠️ Файл `kaspi-price-list.xlsx` не найден.")
         return
 
     try:
@@ -101,12 +122,13 @@ async def run_test_repricing(chat_id):
             )
             page = await context.new_page()
 
-            # Ограничиваем тест ровно первыми 100 товарами
+            # Тестируем на первых 100 товарах
             test_df = df_kaspi.head(100)
 
             for idx, row in test_df.iterrows():
                 sku = str(row.get('SKU', '')).strip()
                 model = str(row.get('model', 'Товар')).strip()
+                current_price = float(row.get('price', 0))
                 
                 top_price, seller_count = await fetch_kaspi_top_price(page, sku, model)
 
@@ -134,16 +156,16 @@ async def run_test_repricing(chat_id):
         df_kaspi.to_excel(output_file, index=False)
 
         msg = (
-            f"✅ **Тест на 100 товарах завершён!**\n\n"
+            f"✅ **Тест с улучшенным парсером завершён!**\n\n"
             f"📦 Проверено товаров: `100`\n"
-            f"🎯 Изменено цен (-1 ₸): `{updated_count}`\n"
-            f"🛡 Без изменений (нет конкурентов): `{unchanged_count}`\n"
+            f"🎯 Обновлено цен под 1-е место: `{updated_count}`\n"
+            f"🛡 Без изменений (нет конкурентов / не найдено): `{unchanged_count}`\n"
             f"⚠️ Демпинг ниже {MIN_PRICE_LIMIT} ₸: `{len(problem_items)}`"
         )
         await bot.send_message(chat_id, msg)
         
         file_to_send = FSInputFile(output_file)
-        await bot.send_document(chat_id, file_to_send, caption="📄 Прайс-лист после теста 100 товаров")
+        await bot.send_document(chat_id, file_to_send, caption="📄 Обновленный прайс-лист")
 
         if problem_items:
             report_text = f"🚨 **Товары с демпингом ниже {MIN_PRICE_LIMIT} ₸:**\n\n"
@@ -152,7 +174,7 @@ async def run_test_repricing(chat_id):
             await bot.send_message(chat_id, report_text)
 
     except Exception as e:
-        err_msg = f"❌ Ошибка во время теста: {str(e)}"
+        err_msg = f"❌ Ошибка: {str(e)}"
         print(err_msg)
         await bot.send_message(chat_id, err_msg)
 
@@ -163,10 +185,7 @@ async def run_test_repricing(chat_id):
 async def cmd_start(message: types.Message):
     global ADMIN_CHAT_ID
     ADMIN_CHAT_ID = message.chat.id
-    await message.answer(
-        "🧪 **Тест реприсера на 100 товарах!**\n\n"
-        "Отправьте файл `kaspi-price-list.xlsx`, и бот проверит первые 100 позиций за пару минут."
-    )
+    await message.answer("🤖 Бот с улучшенным поиском по SKU готов к работе. Отправьте файл `kaspi-price-list.xlsx`.")
 
 @dp.message(Command("reprice"))
 async def cmd_reprice(message: types.Message):
@@ -178,7 +197,7 @@ async def handle_docs(message: types.Message):
         file_id = message.document.file_id
         file = await bot.get_file(file_id)
         await bot.download_file(file.file_path, "kaspi-price-list.xlsx")
-        await message.answer("💾 Файл получен! Запускаю тест на 100 товаров...")
+        await message.answer("💾 Файл получен! Запускаю улучшенный парсинг по SKU...")
         await run_test_repricing(message.chat.id)
     else:
         await message.answer("Пожалуйста, отправьте `.xlsx` файл.")
@@ -187,7 +206,7 @@ async def handle_docs(message: types.Message):
 # 5. Запуск
 # ---------------------------------------------------------
 async def main():
-    print("--- Тестовый бот на 100 товаров запущен! ---")
+    print("--- Улучшенный бот запущен! ---")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
