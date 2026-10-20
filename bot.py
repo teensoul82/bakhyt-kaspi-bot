@@ -2,9 +2,9 @@ import os
 import time
 import random
 import threading
+import re
 import requests
 import pandas as pd
-from bs4 import BeautifulSoup
 import telegram
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -24,7 +24,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 
-# --- НАСТРОЙКИ (ЗАМЕНИТЕ СВОИ ТОКЕНЫ ЗДЕСЬ) ---
+# --- НАСТРОЙКИ ---
 KASPI_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="
 TELEGRAM_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"
 TELEGRAM_CHAT_ID = "7663437881"
@@ -36,7 +36,6 @@ def get_competitor_price(url):
         if not url.startswith('http'):
             url = "https://" + url if not url.startswith('/') else "https:" + url
 
-        import re
         match_id = re.search(r'-([0-9]{6,})/?(\?|$)', url)
         if not match_id:
             print(f"⚠️ Не удалось найти ID в ссылке: {url}")
@@ -46,16 +45,16 @@ def get_competitor_price(url):
         api_url = f"https://kaspi.kz/yml/offer-view/v1/offers/{product_id}?cityId=750000000&limit=10"
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Kaspi.kz/5.22.1 (Android/9; SDK 28; Xiaomi Redmi Note 7)",
             "Accept": "application/json, text/plain, */*",
-            "Referer": url,
+            "Accept-Encoding": "gzip, deflate",
+            "Referer": f"https://kaspi.kz/shop/p/product-{product_id}/",
             "X-Requested-With": "XMLHttpRequest"
         }
         
         response = requests.get(api_url, headers=headers, timeout=15)
         
-        # Выведем первые 150 символов ответа в лог для проверки
-        print(f"🔍 Ответ API для SKU {product_id} (код {response.status_code}): {response.text[:150]}...")
+        print(f"🔍 Ответ API для SKU {product_id} (код {response.status_code}): {response.text[:100]}...")
 
         if response.status_code == 200:
             data = response.json()
@@ -70,11 +69,8 @@ def get_competitor_price(url):
         print(f"❌ Ошибка парсинга для {url}: {e}")
         return None
 
-
-
-
 def send_to_kaspi_api(df):
-    # Здесь ваша функция отправки в API Kaspi
+    # Функция отправки данных в API Kaspi
     return True
 
 def send_telegram_report(batch_number, df, success):
@@ -91,10 +87,6 @@ def process_batch(batch_df, batch_number, total_count):
     for idx, row in batch_df.iterrows():
         current_num = len(processed_rows) + 1
         
-        # Отладка колонок для первой строки
-        if current_num == 1:
-            print(f"📋 Доступные колонки в CSV: {list(row.index)}")
-
         # Улучшенный поиск колонки со ссылкой
         link_col = next((col for col in row.index if 'ссылк' in str(col).lower() or 'url' in str(col).lower() or 'kaspi' in str(col).lower() or 'http' in str(col).lower()), None)
         if not link_col:
@@ -106,11 +98,9 @@ def process_batch(batch_df, batch_number, total_count):
             print(f"⚠️ Пропущена строка {current_num}: не найдена колонка со ссылкой!")
             continue
         url = str(row[link_col]).strip()
-
-
         
         # Поиск SKU / Артикула
-        sku_col = next((col for col in row.index if 'артикул' in str(col).lower() or 'sku' in str(col).lower()), None)
+        sku_col = next((col for col in row.index if 'артикул' in str(col).lower() or 'sku' in str(col).lower() or 'id' in str(col).lower()), None)
         sku = str(row[sku_col]).strip() if sku_col and pd.notnull(row[sku_col]) else "N/A"
         
         title = str(row['Название']).strip() if 'Название' in row else "Товар"
@@ -118,6 +108,7 @@ def process_batch(batch_df, batch_number, total_count):
         min_price_val = row.get('min_price', DEFAULT_MIN_PN)
         min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PN
         
+        # Пауза между запросами для защиты от блокировок
         time.sleep(random.uniform(6.0, 12.0))
         competitor_price = get_competitor_price(url)
         
@@ -141,8 +132,7 @@ def process_batch(batch_df, batch_number, total_count):
                 'Статус': status
             })
         else:
-            # КОНКУРЕНТОВ НЕТ: цена НЕ меняется, товар пропускаем
-            print(f"[{current_num}/{total_count}] SKU: {sku} | Конкурентов нет -> Цена не меняется")
+            print(f"[{current_num}/{total_count}] SKU: {sku} | Конкурентов нет / Ошибка запроса -> Цена не меняется")
             continue
 
     if processed_rows:
