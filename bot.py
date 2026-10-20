@@ -148,19 +148,29 @@ def run_repricer_background():
     print("🤖 Фоновый реприсер запущен!")
     while True:
         try:
-            if os.path.exists("price-list.csv"):
-                df = pd.read_csv("price-list.csv")
+            file_name = "price-list.csv" 
+            print(f"🔍 Проверяю наличие файла {file_name}...")
+            
+            if os.path.exists(file_name):
+                print(f"📂 Файл {file_name} успешно найден. Читаю данные...")
+                df = pd.read_csv(file_name)
+                print(f"📊 Всего строк в таблице: {len(df)}")
+                
                 batch_size = 250
                 total_rows = len(df)
                 
                 for i in range(0, total_rows, batch_size):
                     batch_df = df.iloc[i:i+batch_size]
                     batch_num = (i // batch_size) + 1
+                    print(f"🚀 Обработка пачки №{batch_num}...")
                     process_batch(batch_df, batch_num, total_rows)
+            else:
+                print(f"⚠️ Внимание: файл '{file_name}' НЕ найден в корне репозитория!")
                     
+            print("⏳ Цикл завершен. Ожидание 5 минут перед следующим прогоном...")
             time.sleep(300) # пауза между прогонами прайса
         except Exception as e:
-            print(f"Ошибка в фоновом цикле: {e}")
+            print(f"❌ Ошибка в фоновом цикле: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":
