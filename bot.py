@@ -2,65 +2,113 @@ import os
 import time
 import random
 import threading
-import re
-import requests
 import pandas as pd
+import requests
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 
-# ==================== НАСТРОЙКИ ====================
-TELEGRAM_BOT_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"  # 👈 Ваш старый токен телеграм-бота
-KASPI_API_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="      # 👈 Ваш токен от кабинета Kaspi
+# ================= НАСТРОЙКИ =================
+TELEGRAM_BOT_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"  # <--- Вставьте сюда токен от @BotFather
+KASPI_TOKEN = "hmsuburlSShdYJ0cTBBMwZ9cdZApuLhsdHztmPxQsnI="          # <--- Вставьте сюда ваш X-Auth-Token от Kaspi
+TELEGRAM_CHAT_ID = ""                 # Оставьте пустым, бот пришлет ID по команде /start
+DEFAULT_MIN_PRICE = 1000
+# =============================================
 
-CSV_FILE = "price-list.csv"
-KASPI_API_URL = "https://kaspi.kz/shop/api/v2/offers"
-DEFAULT_MIN_PRICE = 800
-PAUSE_BETWEEN_BATCHES_MINUTES = 35
-
-# Инициализация телеграм-бота
+# Инициализация бота
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-}
+# Обработка команды /start для получения Chat ID
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    chat_id = message.chat.id
+    bot.reply_to(message, f"Привет! Ваш Chat ID: {chat_id}\nСкопируйте это число и вставьте в код в переменную TELEGRAM_CHAT_ID.")
 
-# --- 1. ФУНКЦИИ РЕПРИСЕРА ---
+# Функция парсинга цен конкурентов с Kaspi
 def get_competitor_price(url):
     try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             return None
+        
         soup = BeautifulSoup(response.text, 'html.parser')
-        price_elements = soup.find_all(class_=re.compile(r'sellers-table__price|sellers-list__price|price'))
+        merchants = soup.find_all('div', class_='merchants-table__item')
         prices = []
-        for elem in price_elements:
-            clean_price = re.sub(r'[^\d]', '', elem.text.strip())
-            if clean_price and clean_price.isdigit():
-                prices.append(int(clean_price))
+        
+        for m in merchants:
+            price_elem = m.find('div', class_='merchants-table__price')
+            if price_elem:
+                price_text = price_elem.get_text(strip=True)
+                clean_price = "".join(filter(str.isdigit, price_text))
+                if clean_price:
+                    prices.append(float(clean_price))
+                    
         if prices:
             return min(prices)
+        return None
     except Exception as e:
-        print(f"[Ошибка чтения ссылки] {url}: {e}")
-    return None
+        print(f"[Ошибка парсинга {url}]: {e}")
+        return None
 
-def send_to_kaspi_api(batch_df):
-    headers = {"Content-Type": "application/json", "X-Auth-Token": KASPI_API_TOKEN}
-    offers_payload = [{"sku": str(row['Артикул']), "price": int(row['Новая_цена'])} for _, row in batch_df.iterrows()]
-    payload = {"data": offers_payload}
-    print(f"\n[Kaspi API] Отправляем новые цены для {len(offers_payload)} товаров...")
+# Отправка обновленных цен в Kaspi API
+def send_to_kaspi_api(result_df):
+    url = "https://kaspi.kz/shop/api/v2/products"
+    headers = {
+        "X-Auth-Token": KASPI_TOKEN,
+        "Content-Type": "application/vnd.api+json",
+        "Accept": "application/vnd.api+json"
+    }
+    
+    success_all = True
+    for _, row in result_df.iterrows():
+        sku = row['Артикул']
+        new_price = row['Новая_цена']
+        
+        payload = {
+            "data": {
+                "type": "products",
+                "attributes": {
+                    "sku": sku,
+                    "price": new_price
+                }
+            }
+        }
+        
+        try:
+            response = requests.put(url, json=payload, headers=headers, timeout=10)
+            if response.status_code not in [200, 201, 204]:
+                print(f"[Kaspi API Ошибка] SKU {sku}: статус {response.status_code}, ответ: {response.text}")
+                success_all = False
+        except Exception as e:
+            print(f"[Kaspi API Сбой связи] SKU {sku}: {e}")
+            success_all = False
+            
+    return success_all
+
+# Отправка отчета в Telegram
+def send_telegram_report(batch_number, result_df, success_api):
+    if not TELEGRAM_CHAT_ID:
+        return 
     try:
-        res = requests.post(KASPI_API_URL, json=payload, headers=headers, timeout=15)
-        if res.status_code == 200:
-            print(f"[Успех API] Цены пачки успешно обновлены!")
-            return True
-        else:
-            print(f"[Ошибка API {res.status_code}]: {res.text}")
-    except Exception as err:
-        print(f"[Ошибка сети API]: {err}")
-    return False
+        updated_count = len(result_df[result_df['Статус'].str.contains('Снижено', na=False)])
+        text = f"📊 **Отчет по пачке №{batch_number}**\n\n" \
+               f"📦 Обработано товаров: {len(result_df)}\n" \
+               f"📉 Изменено цен: {updated_count}\n" \
+               f"🌐 Отправка в Kaspi API: {'Успешно ✅' if success_api else 'Ошибка ❌'}"
+        
+        bot.send_message(TELEGRAM_CHAT_ID, text, parse_mode="Markdown")
+        
+        report_filename = f"report_batch_{batch_number}.csv"
+        with open(report_filename, 'rb') as f:
+            bot.send_document(TELEGRAM_CHAT_ID, f)
+    except Exception as e:
+        print(f"[Ошибка отправки в Telegram]: {e}")
 
+# Логика обработки пачки товаров
 def process_batch(batch_df, batch_number):
     print(f"\n================ СТАРТ ПАЧКИ №{batch_number} ({len(batch_df)} товаров) ================")
     processed_rows = []
@@ -68,11 +116,12 @@ def process_batch(batch_df, batch_number):
     
     for idx, row in batch_df.iterrows():
         current_num = len(processed_rows) + 1
-                # Автоматический поиск колонки со ссылкой
+        
+        # Всеядный поиск колонки со ссылкой
         link_col = next((col for col in row.index if str(col).strip().lower() in ['id', 'ссылка', 'url', 'link']), row.index[0])
         url = str(row[link_col]).strip()
-
-        sku = str(row['Артикул']).strip()
+        
+        sku = str(row['Артикул']).strip() if 'Артикул' in row else 'N/A'
         title = str(row['Название']).strip() if 'Название' in row else ''
         min_price_val = row.get('min_price', DEFAULT_MIN_PRICE)
         min_price = float(min_price_val) if pd.notnull(min_price_val) else DEFAULT_MIN_PRICE
@@ -102,87 +151,54 @@ def process_batch(batch_df, batch_number):
         })
         
     result_df = pd.DataFrame(processed_rows)
-    
-    # Сохраняем локально отчет в CSV
     report_filename = f"report_batch_{batch_number}.csv"
     result_df.to_csv(report_filename, index=False, encoding='utf-8-sig')
     
-    # Отправляем в Kaspi API
     success_api = send_to_kaspi_api(result_df)
-    
-    # Отправляем отчет в Телеграм
     send_telegram_report(batch_number, result_df, success_api)
-    print(f"[ОТЧЕТ] Пачка №{batch_number} обработана и отправлена в Telegram.")
+    print(f"[ОТЧЕТ] Пачка №{batch_number} обработана.")
 
+# Фоновый цикл реприсера
 def run_repricer_background():
-    """Фоновый цикл реприсинга"""
+    time.sleep(10)
     print("🤖 Фоновый реприсер запущен!")
-    time.sleep(10)  # Даем боту время спокойно стартовать
     while True:
         try:
-            if os.path.exists(CSV_FILE):
-                try:
-                    df = pd.read_csv(CSV_FILE)
-                except Exception:
-                    df = pd.read_csv(CSV_FILE, header=1)
-                df.columns = [str(c).strip() for c in df.columns]
-                
-                batch_1 = df.iloc[:250].copy()
-                batch_2 = df.iloc[250:].copy()
-                
-                process_batch(batch_1, batch_number=1)
-                
-                if len(batch_2) > 0:
-                    print(f"\n⏳ Пачка №1 завершена. Ожидание {PAUSE_BETWEEN_BATCHES_MINUTES} минут...")
-                    time.sleep(PAUSE_BETWEEN_BATCHES_MINUTES * 60)
-                    process_batch(batch_2, batch_number=2)
-                    
-                print("\n🎉 Цикл реприсинга завершен. Следующий запуск через 24 часа.")
+            if os.path.exists("price-list.csv"):
+                df = pd.read_csv("price-list.csv")
+                batch_size = 250
+                for i in range(0, len(df), batch_size):
+                    batch_df = df.iloc[i:i+batch_size]
+                    batch_num = (i // batch_size) + 1
+                    process_batch(batch_df, batch_num)
             else:
-                print(f"[Предупреждение] Файл {CSV_FILE} не найден на сервере.")
+                print("Файл price-list.csv не найден!")
+            
+            time.sleep(10800) # Повтор каждые 3 часа
         except Exception as e:
             print(f"[Ошибка в фоновом реприсере]: {e}")
-            
-        # Повторять проверку цен раз в сутки
-        time.sleep(86400)
+            time.sleep(60)
 
-
-# --- 2. TELEGRAM КОМАНДЫ ---
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "Привет! Бот и автоматический реприсер успешно работают на сервере.")
-
-
-# --- 3. HTTP СЕРВЕР ДЛЯ RENDER (чтобы хостинг не усыплял порт) ---
+# HTTP-сервер для Render
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Kaspi Repricer Bot is running live!")
+    def log_message(self, format, *args):
+        return
 
-def run_http_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    print(f"--- HTTP-сервер открыл порт {port} для Render ---")
-    server.serve_forever()
-
-
-# --- 4. ГЛАВНЫЙ СТАРТ ---
+# --- ГЛАВНЫЙ СТАРТ ---
 if __name__ == "__main__":
-    # Запускаем фоновый реприсер в отдельном потоке
     t_repricer = threading.Thread(target=run_repricer_background, daemon=True)
     t_repricer.start()
     
-    # Запускаем Телеграм-бота в отдельном потоке
-    t_bot = threading.Thread(target=lambda: bot.infinity_polling(none_stop=True, interval=3), daemon=True)
+    t_bot = threading.Thread(target=lambda: bot.infinity_polling(none_stop=True, interval=3, skip_pending=True), daemon=True)
     t_bot.start()
     
     print("--- Улучшенный бот и фоновые задачи запущены! ---")
     
-    # HTTP-сервер запускаем в ОСНОВНОМ потоке (чтобы Render сразу видел открытый порт)
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     print(f"--- HTTP-сервер открыл порт {port} для Render ---")
     server.serve_forever()
-
