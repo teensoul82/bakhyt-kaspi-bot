@@ -1,13 +1,13 @@
 import os
 import asyncio
 import logging
-import random
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import pandas as pd
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram.types import FSInputFile
+from playwright.async_api import async_playwright
 
 # ---------------------------------------------------------
 # Настройки
@@ -18,7 +18,6 @@ MIN_PRICE_LIMIT = 800 # Минимальный порог цены (в тенг�
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler()
 
 # ---------------------------------------------------------
 # 1. Веб-сервер для поддержки Render (Port Binding)
@@ -41,129 +40,163 @@ def start_health_server():
 threading.Thread(target=start_health_server, daemon=True).start()
 
 # ---------------------------------------------------------
-# 2. Логика авто-реприсинга на 1-е место
+# 2. Быстрый парсинг Kaspi по SKU
 # ---------------------------------------------------------
-async def run_auto_repricing(chat_id=None):
-    target_chat = chat_id or ADMIN_CHAT_ID
-    if target_chat:
-        await bot.send_message(
-            target_chat, 
-            "🔄 **Запущен реприсинг!**\nПроверяю конкурентов на Kaspi..."
-        )
+async def fetch_kaspi_top_price(page, sku, model_name):
+    try:
+        search_query = str(sku).strip() if pd.notna(sku) and str(sku).strip() else str(model_name).strip()
+        url = f"https://kaspi.kz/shop/search/?text={search_query}"
+        
+        await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+        await asyncio.sleep(1) # Короткая пауза
+        
+        offers = await page.query_selector_all(".item-card__prices-price")
+        if not offers:
+            first_price_elem = await page.query_selector(".item-card__decription .item-card__prices-price")
+            if first_price_elem:
+                price_text = await first_price_elem.inner_text()
+                clean_price = int(''.join(filter(str.isdigit, price_text)))
+                return clean_price, 2 # Есть конкурент
+            return None, 1 # Конкурентов нет (единственный продавец)
+
+        first_price_text = await offers[0].inner_text()
+        top_price = int(''.join(filter(str.isdigit, first_price_text)))
+        seller_count = len(offers)
+        
+        return top_price, seller_count
+    except Exception as e:
+        print(f"Ошибка парсинга SKU {sku}: {e}")
+        return None, 1
+
+# ---------------------------------------------------------
+# 3. Тестовый запуск реприсинга
+# ---------------------------------------------------------
+async def run_test_repricing(chat_id):
+    await bot.send_message(
+        chat_id, 
+        "🚀 **Запускаю быстрый тестовый реприсинг!**\nОткрываю браузер Playwright и проверяю товары на Kaspi..."
+    )
     
-    file_path = "kaspi-price-list.xlsx"
-    if not os.path.exists(file_path):
-        if target_chat:
-            await bot.send_message(
-                target_chat, 
-                "⚠️ Файл `kaspi-price-list.xlsx` не найден на сервере. Пожалуйста, отправьте его боту в чат."
-            )
+    kaspi_file = "kaspi-price-list.xlsx"
+    if not os.path.exists(kaspi_file):
+        await bot.send_message(
+            chat_id, 
+            "⚠️ Файл `kaspi-price-list.xlsx` не найден. Пожалуйста, отправьте его боту."
+        )
         return
 
     try:
-        df = pd.read_excel(file_path)
-        
-        updated_items = 0
-        unchanged_items = 0
-        problem_items = [] # Список товаров, где конкуренты ниже 800 тг
+        df_kaspi = pd.read_excel(kaspi_file)
+        problem_items = []
+        updated_count = 0
+        unchanged_count = 0
 
-        # Заглушка/симуляция обработки товаров по правилам
-        for index, row in df.iterrows():
-            sku = str(row.get('SKU', row.get('Артикул', 'Неизвестно')))
-            model = str(row.get('model', row.get('Название', 'Товар')))
-            
-            # В реальном Playwright здесь берется цена 1-го места
-            # По умолчанию: если конкурентов нет — оставляем цену.
-            # Если есть — делаем на 1 тг ниже (но не меньше 800 тг).
-            
-        await asyncio.sleep(3) # Пауза симуляции
-        
-        # Финальное сообщение в Telegram
-        msg = (
-            f"✅ **Реприсинг завершён!**\n"
-            f"📦 Всего товаров: {len(df)}\n"
-            f"🔹 Правило 1-го места: `-1 ₸` от конкурента\n"
-            f"🛑 Минимальный порог: `{MIN_PRICE_LIMIT} ₸`"
-        )
-        
-        if target_chat:
-            await bot.send_message(target_chat, msg)
-            
-            # Если найдены проблемные товары ниже 800 тг, отправляем отдельное уведомление
-            if problem_items:
-                report_text = "⚠️ **Товары с демпингом ниже 800 ₸ (рекомендуется пересоздать карточки):**\n\n"
-                for item in problem_items[:15]: # Выводим первые 15
-                    report_text += f"• **{item['sku']}** - {item['model']} (Конкурент: {item['top_price']} ₸)\n"
-                if len(problem_items) > 15:
-                    report_text += f"\nИ ещё {len(problem_items) - 15} товаров..."
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox']
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+
+            # Проходим по всем товарам в файле
+            for idx, row in df_kaspi.iterrows():
+                sku = str(row.get('SKU', '')).strip()
+                model = str(row.get('model', 'Товар')).strip()
                 
-                await bot.send_message(target_chat, report_text)
-            
-    except Exception as e:
-        err_msg = f"❌ Ошибка при обработке цен: {str(e)}"
-        print(err_msg)
-        if target_chat:
-            await bot.send_message(target_chat, err_msg)
+                top_price, seller_count = await fetch_kaspi_top_price(page, sku, model)
 
-async def scheduled_repricing_job():
-    random_delay = random.randint(0, 1800)
-    print(f"--- Авто-реприсинг сработал. Старт через {random_delay // 60} мин... ---")
-    await asyncio.sleep(random_delay)
-    await run_auto_repricing()
+                if top_price is None or seller_count <= 1:
+                    # Конкурентов нет
+                    unchanged_count += 1
+                else:
+                    # Конкуренты есть: делаем -1 ₸
+                    new_price = top_price - 1
+                    
+                    if top_price < MIN_PRICE_LIMIT:
+                        # Демпинг ниже 800 ₸
+                        df_kaspi.at[idx, 'price'] = MIN_PRICE_LIMIT
+                        problem_items.append({
+                            'sku': sku,
+                            'model': model,
+                            'top_price': top_price
+                        })
+                        updated_count += 1
+                    else:
+                        target_price = max(new_price, MIN_PRICE_LIMIT)
+                        df_kaspi.at[idx, 'price'] = int(target_price)
+                        updated_count += 1
+
+            await browser.close()
+
+        # Сохраняем результатом Excel
+        output_file = "kaspi-price-list-updated.xlsx"
+        df_kaspi.to_excel(output_file, index=False)
+
+        # Отправляем итоги в Telegram
+        msg = (
+            f"✅ **Тестовый реприсинг завершён!**\n\n"
+            f"📦 Обработано товаров: `{len(df_kaspi)}`\n"
+            f"🎯 Изменено цен (-1 ₸ под 1-е место): `{updated_count}`\n"
+            f"🛡 Без изменений (нет конкурентов): `{unchanged_count}`\n"
+            f"⚠️ Демпинг ниже {MIN_PRICE_LIMIT} ₸: `{len(problem_items)}`"
+        )
+        await bot.send_message(chat_id, msg)
+        
+        # Сразу высылаем готовый файл
+        file_to_send = FSInputFile(output_file)
+        await bot.send_document(chat_id, file_to_send, caption="📄 Ваш готовый обновлённый прайс-лист")
+
+        # Если есть проблемные товары — выводим отчет
+        if problem_items:
+            report_text = f"🚨 **Товары с демпингом ниже {MIN_PRICE_LIMIT} ₸ (под пересоздание):**\n\n"
+            for item in problem_items[:15]:
+                report_text += f"• **{item['sku']}** — {item['model']}\n  └ 📉 Цена конкурента: `{item['top_price']} ₸`\n"
+            if len(problem_items) > 15:
+                report_text += f"\nИ ещё {len(problem_items) - 15} товаров..."
+            
+            await bot.send_message(chat_id, report_text)
+
+    except Exception as e:
+        err_msg = f"❌ Ошибка во время теста: {str(e)}"
+        print(err_msg)
+        await bot.send_message(chat_id, err_msg)
 
 # ---------------------------------------------------------
-# 3. Команды Telegram
+# 4. Команды Telegram
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     global ADMIN_CHAT_ID
     ADMIN_CHAT_ID = message.chat.id
     await message.answer(
-        "👋 **Привет! Я бот-реприсер Kaspi.**\n\n"
-        "⏰ Я работаю **автоматически каждые 2 дня** (в случайное время с разбросом в 5 часов для защиты от блокировок).\n\n"
-        "🎯 **Правила ценообразования:**\n"
-        "1. Нет конкурентов ➔ цена не меняется.\n"
-        "2. Есть конкуренты ➔ ставим цену на **1 ₸ ниже** 1-го места.\n"
-        "3. Минимальный порог ➔ **800 ₸**.\n"
-        "4. Демпинг ниже 800 ₸ ➔ пришлю список для пересоздания карточек.\n\n"
-        "📌 **Доступные команды:**\n"
-        "• `/reprice` — запустить обновление цен прямо сейчас\n"
-        "• Отправьте новый `.xlsx` файл, чтобы обновить базовый список товаров."
+        "🧪 **Тестовый режим реприсера Kaspi!**\n\n"
+        "1. Отправьте файл `kaspi-price-list.xlsx`.\n"
+        "2. Бот мгновенно начнёт проверку по SKU на Kaspi и сразу пришлёт вам готовый обновлённый файл!"
     )
 
 @dp.message(Command("reprice"))
 async def cmd_reprice(message: types.Message):
-    await message.answer("🚀 Запускаю ручной реприсинг под 1-е место...")
-    await run_auto_repricing(chat_id=message.chat.id)
+    await run_test_repricing(message.chat.id)
 
 @dp.message()
 async def handle_docs(message: types.Message):
     if message.document and message.document.file_name.endswith('.xlsx'):
         file_id = message.document.file_id
         file = await bot.get_file(file_id)
-        
         await bot.download_file(file.file_path, "kaspi-price-list.xlsx")
-        await message.answer(
-            "💾 Файл `kaspi-price-list.xlsx` успешно сохранён!\n"
-            "Запускаю проверку по новым правилам..."
-        )
-        await run_auto_repricing(chat_id=message.chat.id)
+        await message.answer("💾 Файл получен! Начинаю моментальный парсинг...")
+        await run_test_repricing(message.chat.id)
     else:
-        await message.answer("Пожалуйста, отправьте файл в формате Excel (`.xlsx`).")
+        await message.answer("Пожалуйста, отправьте `.xlsx` файл.")
 
 # ---------------------------------------------------------
-# 4. Запуск приложения
+# 5. Запуск
 # ---------------------------------------------------------
 async def main():
-    scheduler.add_job(
-        scheduled_repricing_job, 
-        'interval', 
-        days=2, 
-        jitter=18000
-    )
-    scheduler.start()
-    
-    print("--- Telegram-бот с рандом-планировщиком запущен! ---")
+    print("--- Тестовый бот запущен! ---")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
