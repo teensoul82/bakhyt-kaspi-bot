@@ -12,6 +12,20 @@ TELEGRAM_TOKEN = "8696192191:AAGQnMUKuKMTVjyESIar6G9_QzSI5Mws1Pc"
 TELEGRAM_CHAT_ID = "7663437881"
 DEFAULT_MIN_PN = 1000
 
+def get_free_proxy():
+    """Автоматически получает случайный бесплатный прокси"""
+    try:
+        url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&timeout=5000"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            proxies_list = [p.strip() for p in res.text.splitlines() if p.strip()]
+            if proxies_list:
+                proxy = random.choice(proxies_list)
+                return f"http://{proxy}"
+    except Exception as e:
+        print(f"⚠️ Не удалось получить прокси: {e}")
+    return None
+
 def get_competitor_price(url):
     try:
         url = str(url).strip()
@@ -31,15 +45,21 @@ def get_competitor_price(url):
             "Host": "kaspi.kz",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": f"https://kaspi.kz/shop/p/product-{product_id}/",
             "X-Requested-With": "XMLHttpRequest"
         }
         
         session = requests.Session()
-        response = session.get(api_url, headers=headers, timeout=15)
         
-        print(f"🔍 SKU {product_id} (статус {response.status_code})")
+        # Получаем и подключаем бесплатный прокси
+        proxy = get_free_proxy()
+        proxies_dict = {"http": proxy, "https": proxy} if proxy else None
+        
+        response = session.get(api_url, headers=headers, proxies=proxies_dict, timeout=15)
+        
+        proxy_info = f" [Прокси: {proxy}]" if proxy else " [Без прокси]"
+        print(f"🔍 SKU {product_id} (статус {response.status_code}){proxy_info}")
 
         if response.status_code == 200:
             data = response.json()
@@ -116,9 +136,8 @@ def process_batch(batch_df, batch_number, total_count):
         send_telegram_report(batch_number, result_df, success_api)
 
 def main():
-    # Если запуск автоматический (по cron), делаем рандомную паузу от 0 до 5 часов
     if os.getenv("GITHUB_EVENT_NAME") == "schedule":
-        delay_seconds = random.randint(0, 18000) # от 0 до 5 часов
+        delay_seconds = random.randint(0, 18000)
         hours_delay = delay_seconds // 3600
         minutes_delay = (delay_seconds % 3600) // 60
         print(f"⏳ Рандомная задержка перед стартом: {hours_delay} ч. {minutes_delay} мин...")
