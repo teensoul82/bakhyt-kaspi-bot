@@ -44,15 +44,22 @@ def get_competitor_price(url):
 
         api_url = f"https://kaspi.kz/yml/offer-view/v1/offers/{product_id}?cityId=750000000&limit=10"
         
+        # Эмулируем реальное приложение и устройство, добавляем куки-заглушки
         headers = {
-            "User-Agent": "Kaspi.kz/5.22.1 (Android/9; SDK 28; Xiaomi Redmi Note 7)",
+            "Host": "kaspi.kz",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
             "Referer": f"https://kaspi.kz/shop/p/product-{product_id}/",
-            "X-Requested-With": "XMLHttpRequest"
+            "X-Requested-With": "XMLHttpRequest",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty"
         }
         
-        response = requests.get(api_url, headers=headers, timeout=15)
+        # Используем сессию для сохранения контекста
+        session = requests.Session()
+        response = session.get(api_url, headers=headers, timeout=15)
         
         print(f"🔍 Ответ API для SKU {product_id} (код {response.status_code}): {response.text[:100]}...")
 
@@ -68,6 +75,7 @@ def get_competitor_price(url):
     except Exception as e:
         print(f"❌ Ошибка парсинга для {url}: {e}")
         return None
+
 
 def send_to_kaspi_api(df):
     # Функция отправки данных в API Kaspi
